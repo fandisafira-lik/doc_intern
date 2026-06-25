@@ -1,0 +1,6 @@
+# Asset
+mod/download/uploads/*
+
+# Libary dan sejenis
+dist/
+plugins/
