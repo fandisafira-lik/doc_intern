@@ -1,3 +1,71 @@
+<?php
+// ========== LOGIKA PHP ==========
+// Ambil data session dan siapkan parameter
+$keynumKaryawan = $_SESSION['doc']['keynum_karyawan'] ?? '';
+$keynumKaryawanPadded = str_pad($keynumKaryawan, 8, '0', STR_PAD_LEFT);
+
+// Query dengan parameter binding (gunakan prepared statement untuk keamanan)
+$sql =
+  "SELECT 
+    du.*,
+    mcd.nama as cat_name,
+    mrc.keterangan as nama_rc 
+  FROM 
+    doc_upload du 
+    LEFT JOIN m_category_doc mcd ON du.jenis_doc = mcd.id 
+    LEFT JOIN m_resp_center mrc ON du.rc_penerbit = mrc.keynum_rc 
+  WHERE 
+    view_rc LIKE ? 
+    OR userid = ?";
+
+$params = array("%$keynumKaryawanPadded%", $keynumKaryawan);
+$stmt = sqlsrv_query($conn, $sql, $params);
+
+if ($stmt === false) {
+  die(print_r(sqlsrv_errors(), true));
+}
+
+// Kumpulkan data ke dalam array untuk dipisahkan dari HTML
+$rows = [];
+while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+  // Format expiry_date jika ada, jika null beri string kosong
+  $expiryFormatted = '';
+  if (!empty($row['expiry_date'])) {
+    $expiryFormatted = date_format($row['expiry_date'], 'Y-m-d');
+  }
+  // Tambahkan data yang sudah diformat ke array
+  $rows[] = [
+    'id'          => $row['id'],
+    'cat_name'    => htmlspecialchars($row['cat_name'] ?? '', ENT_QUOTES, 'UTF-8'),
+    'url'         => htmlspecialchars($row['url'] ?? '', ENT_QUOTES, 'UTF-8'),
+    'description' => htmlspecialchars($row['description'] ?? '', ENT_QUOTES, 'UTF-8'),
+    'nama_rc'     => htmlspecialchars($row['nama_rc'] ?? '', ENT_QUOTES, 'UTF-8'),
+    'tags'        => htmlspecialchars(str_replace('^', ' ', $row['tags'] ?? ''), ENT_QUOTES, 'UTF-8'),
+    'expiry'      => $expiryFormatted,
+    'userid'      => $row['userid'] ?? ''
+  ];
+}
+sqlsrv_free_stmt($stmt);
+
+$baseurlFile = $baseurl_file ?? '';
+
+// get privilege edit rotasi pdf
+$query_get_privilege =
+  "SELECT
+    TOP 1 *
+  FROM
+    m_info mi
+  WHERE
+    mi.kategori_info = 'doc_intern'
+    and mi.nm_info = 'privilege_update_pdf'
+    and mi.site1 = ?
+    and mi.info_value = ? -- keynum_karyawan";
+
+$stmt_get_privilege = sqlsrv_query($conn, $query_get_privilege, array($_SESSION['doc']['site1'], $keynumKaryawan));
+$has_privilege = sqlsrv_fetch_array($stmt_get_privilege, SQLSRV_FETCH_ASSOC);
+sqlsrv_free_stmt($stmt_get_privilege);
+?>
+
 <style type="text/css">
   #check-all {
     transform: scale(1.5);
@@ -51,9 +119,6 @@
     font-size: 14px !important;
   }
 
-  /* #userlogs_privilege table thead th {
-    padding: 3px 5px 3px 5px !important;
-} */
   #tab_detail {
     line-height: 1.5;
   }
@@ -86,183 +151,179 @@
   #details .form-control {
     margin: 0 !important;
   }
-</style>
 
+  /* --- 1. MEMBUAT HEADER STICKY --- */
+  #all_data {
+    overflow-y: auto;
+    overflow-x: auto;
+    /* KEMBALIKAN KE AUTO, jangan hidden */
+  }
+
+  #sample_data thead th {
+    position: sticky;
+    top: 0;
+    background-color: #f8f9fa;
+    z-index: 10;
+    border-bottom: 2px solid #dee2e6;
+    /* Tambahkan ini agar judul kolom tidak terlipat aneh saat layar menyempit */
+    white-space: nowrap;
+  }
+</style>
 
 <div class="content-wrapper">
   <section class="content-header">
     <div class="container-fluid">
-      <!-- <div class="row"> -->
-      <!-- <div class="col-sm-6"> -->
-      <div class="row text-left">
-        <h3 class="col-12 col-lg-3">List Document |
-          <!-- <h3 class="col-1 col-sm-1 text-left"> -->
-          <a href="#" onclick="openModalUpload()" style="height: 100px;">
-            <i class="fas fa-file-upload fa-2xl"></i>
-          </a>
-          <!-- </h3> -->
-          <!-- <h3 class="col-1 col-sm-1 text-left" > -->
-          <a href="#" onclick="showSearch()" style="height: 100px;">
-            <i class="fas fa-search fa-2xl"></i>
-          </a>
-        </h3>
-        <div id="searchDt" class="col-12 col-lg-6 col-sm-12 text-left" style="visibility: hidden">
-          <input type="text" class="form-control form-control-sm" id="searchDatatable" placeholder="Search" />
-        </div>
-      </div>
-      <!-- </div> -->
-      <!-- </div> -->
-
-      <div class="row bg-white py-2">
-        <div class="table-responsive table-striped overflow-auto col" style="height: 70vh;" id="all_data">
-          <table id="sample_data" class="hover" style="width: 100%;">
-            <thead>
-              <tr>
-                <th style="padding: 0px !important;width: 11% !important; line-height: 25px !important; vertical-align: text-top !important;" class="">Category / Detail</th>
-                <th style="width: 40% !important;">File Description / View File</th>
-                <th>RC Uploader / Download</th>
-                <th style="display: none;">tags</th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php
-              // if($_SESSION['doc']['keynum_rc'] == '1' || $_SESSION['doc']['keynum_rc'] == '2'){
-              //   $sql = "SELECT du.*, mcd.nama as cat_name, mrc.keterangan as nama_rc from doc_upload du left join m_category_doc mcd on du.jenis_doc = mcd.id LEFT JOIN m_resp_center mrc ON du.rc_penerbit = mrc.keynum_rc";
-              //
-              // }else{
-              //   $rc_induk = $_SESSION['doc']['keynum_rc'];
-              //   $sql = "SELECT du.*, mcd.nama as cat_name, mrc.keterangan as nama_rc from doc_upload du left join m_category_doc mcd on du.jenis_doc = mcd.id LEFT JOIN m_resp_center mrc ON du.rc_penerbit = mrc.keynum_rc where view_rc like '%".$_SESSION['doc']['username']."%' OR rc_penerbit = '".$_SESSION['doc']['keynum_rc']."'";
-              // }
-              $keynum_karyawan = str_pad($_SESSION['doc']['keynum_karyawan'], 8, 0, STR_PAD_LEFT);
-              // echo $keynum_karyawan;
-              $sql = "SELECT du.*, mcd.nama as cat_name, mrc.keterangan as nama_rc from doc_upload du left join m_category_doc mcd on du.jenis_doc = mcd.id LEFT JOIN m_resp_center mrc ON du.rc_penerbit = mrc.keynum_rc where view_rc like '%" . $keynum_karyawan . "%' OR userid = '" . $_SESSION['doc']['keynum_karyawan'] . "'";
-              $stmt = sqlsrv_query($conn, $sql);
-              if ($stmt === false) {
-                die(print_r(sqlsrv_errors(), true));
-              }
-              $i = 1;
-              while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-              ?>
-                <tr>
-                  <td style="cursor: hand !important;" class="underlined-blue" onclick="showDetail('<?= $row['id'] ?>','<?= $_SESSION['doc']['keynum_karyawan'] ?>')"><?= $row['cat_name'] ?></td>
-                  <td style="cursor: hand !important;" class="underlined-blue" onclick="window.open('<?= $baseurl_file . $row['url'] ?>', '_blank');" class=""><?= $row['description']; ?><span style="visibility: hidden; "><?= date_format($row['expiry_date'], "Y-m-d") ?></span></td>
-                  <td style="cursor: hand !important;"><a href="#">
-                      <!-- <td class="wrap-150"> -->
-                      <div class="row">
-                        <div class="col">
-                          <a class="underlined-blue" href="<?= $baseurl_file . $row['url'] ?>" download>
-                            <!-- <a href="<?= $baseurl_file . $row['url'] ?>" download style="color: #212529 !important"> -->
-                            <?= $row['nama_rc'] ?>
-                          </a>
-                        </div>
-                      </div>
-                    </a>
-                  </td>
-                  <td style="display: none"><?= str_replace("^", " ", $row['tags']); ?></td>
-                </tr>
-              <?php }
-              sqlsrv_free_stmt($stmt);  ?>
-            </tbody>
-          </table>
-        </div>
-        <div class="col-12 col-lg-4 overflow-auto" style="display:none;" id="details">
-          <!-- <h3><i class="fas fa-long-arrow-left"></i></h3> -->
-          <div class="container">
-            <div class="row">
-              <!-- <a href="#" class="col-lg-2"> -->
-              <h5 class="col">
-                <a href="#" onclick="showDetail('0','<?= $_SESSION['doc']['keynum_karyawan'] ?>')"><i class="fas fa-arrow-left"></i></a>
-              </h5>
-              <input disabled style="display: none;" id="id_doc" />
-              <input disabled style="display: none;" id="url_detail" />
-              <!-- </a> -->
-              <!-- <a href="#" class="col-6 text-right"> -->
-              <div class="col text-right">
-                <h5>
-                  <a href="#" onclick="update()" id="saveS" style="visibility: hidden"><i class="far fa-check-circle"></i></a>
-                  <a href="#" onclick="confDel()" id="delS" style="visibility: hidden"><i class="fas fa-trash"></i></a>
-                </h5>
-              </div>
-              <!-- </a> -->
-            </div>
-            <table style="border: 0;" id="tab_detail" class="" style="width: 100% !important">
-              <tr>
-                <td>No Transaksi</td>
-                <td> : </td>
-                <td id="no_transaksi_detail"></td>
-              </tr>
-              <tr>
-                <td>File Name</td>
-                <td> : </td>
-                <td id="filename_detail"></td>
-              </tr>
-              <tr>
-                <td>Description</td>
-                <td> : </td>
-                <!-- <td id="description_detail"></td> -->
-                <td>
-                  <textarea class="form-control f-14" id="description_detail"></textarea>
-                </td>
-              </tr>
-              <tr>
-                <td>Category File </td>
-                <td> : </td>
-                <!-- <td id="category_detail"></td> -->
-                <td>
-                  <select class="form-control select2 f-14" id="category_detail"></select>
-                </td>
-              </tr>
-              <tr>
-                <td>Uploader </td>
-                <td> : </td>
-                <td id="uploader_detail" style="text-transform: capitalize;"></td>
-
-              </tr>
-              <tr>
-                <td>RC Uploader </td>
-                <td> : </td>
-                <td id="rc_uploader_detail"></td>
-              </tr>
-              <tr>
-                <td>Tags </td>
-                <td> : </td>
-                <!-- <td id="tags_detail"></td> -->
-                <td>
-                  <!-- <input class="form-control" id="tags_detail" /> -->
-                  <select id="tags_detail" class="js-example-basic-multiple form-control" name="tags_detail[]" multiple="multiple">
-                  </select>
-                </td>
-              </tr>
-              <tr>
-                <td>Upload Date </td>
-                <td> : </td>
-                <td id="date_detail"></td>
-              </tr>
-              <tr>
-                <td>Expiry Date </td>
-                <td> : </td>
-                <td><input type="text" id="expiry_date" class="form-control" placeholder="yyyy-mm-dd" /></td>
-              </tr>
-            </table>
-            <div class="text-center mt-1">
-              <p>Privilege Users</p>
-            </div>
-            <table id="userlogs_privilege" class="table table-striped">
-              <tbody>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
+      <h3 class="col-12 col-lg-3">List Document |
+        <a href="#" onclick="openModalUpload()" style="height: 100px;">
+          <i class="fas fa-file-upload fa-2xl"></i>
+        </a>
+        <a href="#" onclick="showSearch()" style="height: 100px;">
+          <i class="fas fa-search fa-2xl"></i>
+        </a>
+      </h3>
+      <div id="searchDt" class="col-12 col-lg-6 col-sm-12 text-left" style="visibility: hidden">
+        <input type="text" class="form-control form-control-sm" id="searchDatatable" placeholder="Search" />
       </div>
     </div>
 
+    <div class="row bg-white py-2">
+      <div class="table-responsive table-striped overflow-auto col" style="height: 70vh;" id="all_data">
+        <table id="sample_data" class="hover" style="width: 100%;">
+          <thead>
+            <tr>
+              <th style="padding: 0px !important;width: 11% !important; line-height: 25px !important; vertical-align: text-top !important;" class="">Category / Detail</th>
+              <th style="width: 40% !important;">File Description / View File</th>
+              <th>RC Uploader / Download</th>
+              <th style="display: none;">tags</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php foreach ($rows as $row): ?>
+              <tr>
+                <td>
+                  <span style="cursor: pointer !important;" class="underlined-blue" onclick="showDetail('<?= $row['id'] ?>','<?= $_SESSION['doc']['keynum_karyawan'] ?>')"><?= $row['cat_name'] ?></span>
+
+                  <?php if ($has_privilege): ?>
+                    <a href="#" class="btn-edit-pdf" data-file="<?= $baseurl_file . $row['url'] ?>"><i class="fas fa-pencil-alt"></i></a>
+                  <?php endif; ?>
+                </td>
+
+                <td style="cursor: pointer !important;" class="underlined-blue" onclick="window.open('<?= $baseurlFile . $row['url'] ?>', '_blank');">
+                  <?= $row['description'] ?>
+                  <span style="visibility: hidden;"><?= $row['expiry'] ?></span>
+                </td>
+
+                <td style="cursor: pointer !important;">
+                  <div class="col">
+                    <a class="underlined-blue" href="<?= $baseurlFile . $row['url'] ?>" download>
+                      <?= $row['nama_rc'] ?>
+                    </a>
+                  </div>
+                </td>
+
+                <td style="display: none"><?= $row['tags'] ?></td>
+              </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="col-12 col-lg-4 overflow-auto" style="display:none;" id="details">
+        <div class="container">
+          <div class="row">
+            <h5 class="col">
+              <a href="#" onclick="showDetail('0','<?= $_SESSION['doc']['keynum_karyawan'] ?>')"><i class="fas fa-arrow-left"></i></a>
+            </h5>
+
+            <input disabled style="display: none;" id="id_doc" />
+            <input disabled style="display: none;" id="url_detail" />
+
+            <div class="col text-right">
+              <h5>
+                <a href="#" onclick="update()" id="saveS" style="visibility: hidden"><i class="far fa-check-circle"></i></a>
+                <a href="#" onclick="confDel()" id="delS" style="visibility: hidden"><i class="fas fa-trash"></i></a>
+              </h5>
+            </div>
+          </div>
+
+          <table style="border: 0;" id="tab_detail" class="" style="width: 100% !important">
+            <tr>
+              <td>No Transaksi</td>
+              <td> : </td>
+              <td id="no_transaksi_detail"></td>
+            </tr>
+
+            <tr>
+              <td>File Name</td>
+              <td> : </td>
+              <td id="filename_detail"></td>
+            </tr>
+
+            <tr>
+              <td>Description</td>
+              <td> : </td>
+              <td>
+                <textarea class="form-control f-14" id="description_detail"></textarea>
+              </td>
+            </tr>
+
+            <tr>
+              <td>Category File </td>
+              <td> : </td>
+              <td>
+                <select class="form-control select2 f-14" id="category_detail"></select>
+              </td>
+            </tr>
+
+            <tr>
+              <td>Uploader </td>
+              <td> : </td>
+              <td id="uploader_detail" style="text-transform: capitalize;"></td>
+            </tr>
+
+            <tr>
+              <td>RC Uploader </td>
+              <td> : </td>
+              <td id="rc_uploader_detail"></td>
+            </tr>
+
+            <tr>
+              <td>Tags </td>
+              <td> : </td>
+              <td>
+                <select id="tags_detail" class="js-example-basic-multiple form-control" name="tags_detail[]" multiple="multiple">
+                </select>
+              </td>
+            </tr>
+
+            <tr>
+              <td>Upload Date </td>
+              <td> : </td>
+              <td id="date_detail"></td>
+            </tr>
+
+            <tr>
+              <td>Expiry Date </td>
+              <td> : </td>
+              <td><input type="text" id="expiry_date" class="form-control" placeholder="yyyy-mm-dd" /></td>
+            </tr>
+          </table>
+
+          <div class="text-center mt-1">
+            <p>Privilege Users</p>
+          </div>
+
+          <table id="userlogs_privilege" class="table table-striped">
+            <tbody>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </section>
+
   <div id="alerts"></div>
-
-
 </div>
-
 
 <div class="modal fade" id="uploadModal" role="dialog" aria-labelledby="exampleModalLabel" aria-hidden="true">
   <div class="modal-dialog" role="document">
@@ -270,22 +331,36 @@
       <div class="modal-body">
 
         <div class="">
+          <?php
+          // ========== LOGIKA PHP ==========
+          // Ambil data kategori dari database
+          $query = "SELECT id, nama, access FROM m_category_doc";
+          $stmt = sqlsrv_query($conn, $query);
+          if ($stmt === false) {
+            die(print_r(sqlsrv_errors(), true));
+          }
+
+          // Kumpulkan data ke dalam array dengan pemformatan
+          $categories = [];
+          while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+            $accessLabel = ($row['access'] == 1) ? 'Specific' : 'All';
+            $categories[] = [
+              'id'   => htmlspecialchars($row['id'], ENT_QUOTES, 'UTF-8'),
+              'name' => htmlspecialchars($row['nama'], ENT_QUOTES, 'UTF-8'),
+              'access' => $accessLabel
+            ];
+          }
+          sqlsrv_free_stmt($stmt);
+          ?>
+
+          <!-- ========== HTML ========== -->
           <select id="jenis_doc" class="select2">
             <option selected disabled>-- Select Category --</option>
-            <?php
-            $qulog1 = "SELECT * FROM m_category_doc";
-            // echo $qulog;
-            $res1 = sqlsrv_query($conn, $qulog1);
-            while ($row1 = sqlsrv_fetch_array($res1, SQLSRV_FETCH_ASSOC)) {
-            ?>
-              <option value="<?= $row1['id'] ?>"><?= $row1['nama'] ?> - <?php if ($row1['access'] == '1') {
-                                                                      echo 'Specific';
-                                                                    } else {
-                                                                      echo 'All';
-                                                                    } ?></option>option>
-            <?php
-            }
-            ?>
+            <?php foreach ($categories as $category): ?>
+              <option value="<?= $category['id'] ?>">
+                <?= $category['name'] ?> - <?= $category['access'] ?>
+              </option>
+            <?php endforeach; ?>
           </select>
         </div>
         <form action="" method="post" enctype="multipart/form-data">
@@ -315,10 +390,42 @@
   </div>
 </div>
 
+<div class="modal fade" id="pdfModal" tabindex="-1" role="dialog" aria-hidden="true">
+  <div class="modal-dialog modal-lg" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Edit Rotasi File PDF</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body text-center p-0">
+        <div id="pdf-preview-wrapper" style="height: 600px; overflow-y: auto; background: #525659; padding: 20px;">
+          <div id="pdf-preview-container"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Batal</button>
+        <button type="button" class="btn btn-primary" id="btn-save-pdf">Simpan Perubahan</button>
+      </div>
+    </div>
+  </div>
+</div>
 
-
-
+<script src="plugins/pdf-lib/js/pdf-lib.min.js"></script>
+<script src="plugins/pdf-js/js/pdf.min.js"></script>
 <script type="text/javascript">
+  /**
+   * Variable untuk rotate
+   */
+
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'plugins/pdf-js/js/pdf.worker.min.js'; // Sesuaikan path
+
+  let currentFileUrl = '';
+  let currentPdfDoc = null;
+  let pageRotations = {}; // Menyimpan rotasi spesifik per halaman, contoh: { 1: 90, 2: 0, 3: 270 }
+  let currentPdfBytes = null; // <-- TAMBAHKAN VARIABEL BARU INI
+
   $(document).ready(function() {
     $('.js-example-basic-multiple').select2({
       tags: true,
@@ -329,181 +436,555 @@
         }
       }
     });
+
     $('#expiry_date').datepicker({
       dateFormat: 'yy-mm-dd'
     });
+
     $('#expired_date').datepicker({
       dateFormat: 'yy-mm-dd'
     });
-  });
 
-  function showDetail(id, user) {
-    if (id == "0") {
+    // $("#but_upload").click(function() {
+    //   var fd = new FormData();
+    //   var files = $('#fileToUpload')[0].files;
+    //   var jd = $('#jenis_doc').val();
+    //   var description = $('#rename').val();
+    //   var tags = $('#tags').val();
+    //   var tag = "";
+    //   if (tags.length > 0) {
+    //     for (var i = 0; i < tags.length; i++) {
+    //       tag += tags[i];
+    //       if (i != (tags.length - 1)) {
+    //         tag += "^";
+    //       }
+    //     }
+    //   }
+    //   // console.log(tag);
+    //   if (jd == '' || jd == null) {
+    //     alert("Document Type Can not be Empty!");
+    //   } else if (description == '' || description == null) {
+    //     alert("Description Can not be Empty!");
+    //   } else {
+    //     if (files.length > 0) {
+    //       fd.append('file', files[0]);
+    //       fd.append('jenis_doc', jd);
+    //       fd.append('description', description);
+    //       fd.append('tags', tag);
+    //       fd.append('expiry_date', $('#expired_date').val());
+    //       $.ajax({
+    //         url: 'mod/download/upload.php',
+    //         type: 'post',
+    //         data: fd,
+    //         dataType: 'json',
+    //         contentType: false,
+    //         processData: false,
+    //         success: function(response) {
+    //           if (response.status == 1) {
+    //             alert("Upload " + response.name + " Success!");
+    //             $('#uploadModal').modal('hide');
+    //           } else {
+    //             alert('File upload Fail!');
+    //             $('#uploadModal').modal('hide');
+    //           }
+    //           location.reload();
+    //         }
+    //       });
+    //     } else {
+    //       alert("Please select a file.");
+    //     }
+    //     $('#fileToUpload').val('');
+    //   }
+    // });
+    $("#but_upload").click(function() {
+      // Ambil nilai dari elemen form, gunakan jQuery secara konsisten
+      const fileInput = $('#fileToUpload');
+      const files = fileInput.get(0).files; // vanilla property files
+      const docType = $('#jenis_doc').val();
+      const description = $('#rename').val();
+      // tags bisa berupa array (multiple select) atau string biasa
+      const tagsRaw = $('#tags').val();
+      const expiryDate = $('#expiry_date').val(); // gunakan #expiry_date sesuai form sebelumnya
 
-    } else {
-      var data = {
-        "id": id
-      };
+      // Konversi tags menjadi string dipisah "^"
+      // Array.isArray adalah built-in vanilla js untuk cek tipe array
+      const tagString = Array.isArray(tagsRaw) ? tagsRaw.join('^') : (tagsRaw || '');
+
+      // --- Validasi dengan early return ---
+      if (!docType) {
+        alert('Document Type Can not be Empty!');
+        return;
+      }
+      if (!description) {
+        alert('Description Can not be Empty!');
+        return;
+      }
+      if (!files || files.length === 0) {
+        alert('Please select a file.');
+        fileInput.val('');
+        return;
+      }
+
+      // Siapkan FormData
+      const formData = new FormData();
+      formData.append('file', files[0]);
+      formData.append('jenis_doc', docType);
+      formData.append('description', description);
+      formData.append('tags', tagString);
+      formData.append('expiry_date', expiryDate);
+
+      // Kirim data melalui AJAX dengan setting tradisional
       $.ajax({
-        url: 'mod/download/GetData.php',
+        url: 'mod/download/upload.php',
         type: 'post',
-        data: data,
+        data: formData,
         dataType: 'json',
+        contentType: false,
+        processData: false,
         success: function(response) {
-          if (response.status == "00") {
-
-            $.ajax({
-              url: 'mod/download/GetDataAllCategory.php',
-              type: 'post',
-              data: data,
-              dataType: 'json',
-              success: function(response1) {
-                if (response1.status == "00") {
-                  var cate = '';
-                  $('#category_detail').html('');
-                  for (var i = 0; i < response1.msg.length; i++) {
-                    if (response1.msg[i]['id'] == response.msg['jenis_doc']) {
-                      cate = '<option value=' + response1.msg[i]['id'] + ' selected>' + response1.msg[i]['nama'] + ' - ' + response1.msg[i]['access'] + '</option>';
-                    } else {
-                      cate = '<option value=' + response1.msg[i]['id'] + '>' + response1.msg[i]['nama'] + ' - ' + response1.msg[i]['access'] + '</option>';
-                    }
-                    $('#category_detail').append(cate);
-                  }
-                } else {
-                  alert("No Data!");
-                  // $('#uploadModal').modal('hide');
-                }
-                // location.reload();
-              }
-            });
-
-            $('#id_doc').val(id);
-            $('#filename_detail').html(response.msg['nama']);
-            $('#url_detail').val(response.msg['url']);
-            $('#description_detail').val(response.msg['description']);
-            $('#no_transaksi_detail').html(response.msg['no_transaksi']);
-            $('#category_detail').html(response.msg['category']);
-            $('#uploader_detail').html(response.msg['userid']);
-            $('#date_detail').html(getDate("Date", response.msg['date_uploaded']['date']));
-            if (response.msg['expiry_date'] == null || response.msg['expiry_date'] == '') {
-              $('#expiry_date').val("");
-            } else {
-              $('#expiry_date').val(getDate("Date", response.msg['expiry_date']['date']));
-            }
-            $('#rc_uploader_detail').html(response.msg['keterangan']);
-            $('#tags_detail').html('');
-            if (response.msg['tags'] == null || response.msg['tags'] == '') {
-
-            } else {
-              var tags = response.msg['tags'].split("^");
-              // console.log(tags);
-              var tag = "";
-              for (var i = 0; i < tags.length; i++) {
-                tag = '<option value=' + tags[i] + ' selected>' + tags[i] + '</option>';
-                // tag += tags[i];
-                // if(i!=(tags.length-1)){
-                //   tag += " | ";
-                // }
-                $('#tags_detail').append(tag);
-              }
-            }
-            var tbodyRef = document.getElementById('userlogs_privilege');
-            // var tbodyRef = document.getElementById('userlogs_privilege').getElementsByTagName('tbody')[0];
-            if (response.msg['detail'] == null) {
-              $('#userlogs_privilege tbody').empty();
-            } else {
-              $('#userlogs_privilege tbody').empty();
-              // var privilege = response.msg['detail'].split("^");
-              for (var i = 0; i < response.msg['detail'].length; i++) {
-                $('#userlogs_privilege').append('<tr><td>' + response.msg['detail'][i]['first_name'] + ' - ' + response.msg['detail'][i]['position_name_id'] + '</td></tr>');
-              }
-            }
-
-            if (user == response.msg['userid']) {
-              document.getElementById('delS').style.visibility = 'visible';
-              document.getElementById('saveS').style.visibility = 'visible';
-              document.getElementById('category_detail').disabled = false;
-              document.getElementById('description_detail').disabled = false;
-              document.getElementById('tags_detail').disabled = false;
-            } else {
-              document.getElementById('delS').style.visibility = 'hidden';
-              document.getElementById('saveS').style.visibility = 'hidden';
-              document.getElementById('category_detail').disabled = true;
-              document.getElementById('description_detail').disabled = true;
-              document.getElementById('tags_detail').disabled = true;
-
-            }
-
-            // alert("Upload "+response.name+ " Success!");
-            // $('#uploadModal').modal('hide');
+          // Tampilkan pesan sukses/gagal, tutup modal, dan reload
+          if (response.status == 1) {
+            alert(`Upload ${response.name} Success!`);
           } else {
-            alert("No Data!");
-            // $('#uploadModal').modal('hide');
+            alert('File upload Fail!');
           }
-          // location.reload();
+          $('#uploadModal').modal('hide');
+          location.reload();
         }
       });
-    }
-    if ($(window).width() < 1100) { // if width is less than 600px
-      // MobileFunctions();                 // execute mobile function
-      if (document.getElementById("details").style.display === "none") {
-        $('#all_data').fadeOut();
-        $('#details').fadeIn();
 
-      } else {
-        $('#details').fadeOut();
-        $('#all_data').fadeIn();
-      }
-      // document.getElementById("details").style.display = "flex";
+      // Reset input file setelah upload dimulai
+      fileInput.val('');
+    });
 
-    } else {
-      // DesktopFunctions()
-      if (id == "0") {
-        $('#details').fadeOut();
-      } else {
-        $('#details').fadeIn();
+    /**
+     * EVENT LISTENERS ROTATE
+     */
+
+    // 1. Tampilkan Modal & Load PDF
+    $('.btn-edit-pdf').click(async function() {
+      currentFileUrl = $(this).data('file');
+      pageRotations = {};
+      currentPdfBytes = null; // Reset biner lama
+
+      $('#pdfModal').modal('show');
+      $('#pdf-preview-container').html('<div class="text-white mt-5">Memuat dokumen...</div>');
+
+      if (currentPdfDoc) {
+        try {
+          await currentPdfDoc.destroy();
+        } catch (e) {}
+        currentPdfDoc = null;
       }
+
+      try {
+        // Ambil data dari server dengan timestamp unik agar mendapat versi paling segar
+        const response = await fetch(currentFileUrl + '?v=' + Date.now(), {
+          cache: 'no-store'
+        });
+        currentPdfBytes = await response.arrayBuffer(); // <-- SIMPAN BINER KE MEMORI GLOBAL
+
+        const loadingTask = pdfjsLib.getDocument({
+          data: currentPdfBytes
+        });
+        currentPdfDoc = await loadingTask.promise;
+
+        await setupAllPages();
+      } catch (error) {
+        console.error('Error:', error);
+        $('#pdf-preview-container').html('<div class="text-danger mt-5">Gagal memuat dokumen.</div>');
+      }
+    });
+
+    // 2. Aksi Putar Kanan (Menggunakan Event Delegation karena tombol dibuat dinamis)
+    $('#pdf-preview-container').on('click', '.btn-rotate-right', function() {
+      const pageNum = $(this).data('page');
+      pageRotations[pageNum] = (pageRotations[pageNum] + 90) % 360;
+      renderSinglePage(pageNum); // Hanya render ulang halaman yang diklik
+    });
+
+    // 3. Aksi Putar Kiri
+    $('#pdf-preview-container').on('click', '.btn-rotate-left', function() {
+      const pageNum = $(this).data('page');
+      pageRotations[pageNum] = (pageRotations[pageNum] - 90) % 360;
+      if (pageRotations[pageNum] < 0) pageRotations[pageNum] += 360;
+      renderSinglePage(pageNum); // Hanya render ulang halaman yang diklik
+    });
+
+    // 4. Proses Simpan ke Server (Menyimpan sesuai halaman masing-masing)
+    $('#btn-save-pdf').click(async function() {
+      const hasChanges = Object.values(pageRotations).some(rot => rot !== 0);
+      if (!hasChanges) {
+        alert('Tidak ada perubahan rotasi pada halaman manapun.');
+        return;
+      }
+
+      const $btn = $(this);
+      $btn.prop('disabled', true).text('Menyimpan Perubahan...');
+
+      try {
+        // KUNCI UTAMA: JANGAN FETCH KE SERVER LAGI
+        // Langsung muat dari memori RAM browser yang tersimpan sejak modal dibuka
+        const pdfDoc = await PDFLib.PDFDocument.load(currentPdfBytes);
+        const pages = pdfDoc.getPages();
+
+        pages.forEach((page, index) => {
+          const pageNum = index + 1;
+          const extraRotation = pageRotations[pageNum] || 0;
+
+          if (extraRotation !== 0) {
+            const currentAngle = page.getRotation().angle;
+            page.setRotation(PDFLib.degrees(currentAngle + extraRotation));
+          }
+        });
+
+        const pdfBytes = await pdfDoc.save();
+        const blob = new Blob([pdfBytes], {
+          type: 'application/pdf'
+        });
+
+        const formData = new FormData();
+        const fileName = currentFileUrl.split('/').pop();
+        formData.append('pdf_file', blob, fileName);
+        formData.append('file_path', currentFileUrl);
+
+        $.ajax({
+          url: 'mod/download/update_pdf.php',
+          type: 'POST',
+          data: formData,
+          processData: false,
+          contentType: false,
+          success: async function() {
+            alert('PDF berhasil diperbarui!');
+
+            // 1. Perbarui cache lokal di RAM dengan biner baru yang sudah miring
+            currentPdfBytes = pdfBytes;
+            pageRotations = {}; // Reset status miring visual
+
+            $('#pdf-preview-container').html('<div class="text-white mt-5">Memperbarui tampilan...</div>');
+
+            // 2. Hancurkan instance PDF.js lama
+            if (currentPdfDoc) {
+              try {
+                await currentPdfDoc.destroy();
+              } catch (e) {}
+              currentPdfDoc = null;
+            }
+
+            $('#pdfModal').modal('hide')
+          },
+          error: function(xhr) {
+            alert('Gagal menyimpan PDF: ' + xhr.responseText);
+          },
+          complete: function() {
+            $btn.prop('disabled', false).text('Simpan Perubahan');
+          }
+        });
+
+      } catch (error) {
+        console.error('Error saat menyimpan:', error);
+        alert('Terjadi kesalahan saat memproses file.');
+        $btn.prop('disabled', false).text('Simpan Perubahan');
+      }
+    });
+    /**
+     * END LISTENERS ROTATE
+     */
+  });
+
+  /**
+   * Function utk rotate
+   */
+  // Fungsi untuk merender SATU halaman spesifik (dipanggil saat tombol putar per-halaman diklik)
+  async function renderSinglePage(pageNum) {
+    if (!currentPdfDoc) return;
+
+    try {
+      const page = await currentPdfDoc.getPage(pageNum);
+
+      // KUNCI UTAMA: Ambil rotasi bawaan file asli (yang sudah disimpan oleh pdf-lib)
+      // baseViewport pasti mengembalikan rotasi asli (0, 90, 180, atau 270)
+      const baseViewport = page.getViewport({
+        scale: 1.0
+      });
+      const nativeRotation = baseViewport.rotation;
+
+      // Gabungkan rotasi bawaan dengan rotasi klik dari tombol (jika ada)
+      const userRotation = pageRotations[pageNum] || 0;
+      const totalRotation = (nativeRotation + userRotation) % 360;
+
+      const wrapper = document.getElementById('pdf-preview-wrapper');
+      const canvas = document.getElementById(`canvas-page-${pageNum}`);
+      const context = canvas.getContext('2d');
+
+      // Gunakan totalRotation agar posisi bawaan dan posisi edit bisa sejalan
+      const unscaledViewport = page.getViewport({
+        scale: 1.0,
+        rotation: totalRotation
+      });
+
+      const paddingOffset = 60;
+      const containerWidth = wrapper.clientWidth - paddingOffset;
+      const containerHeight = wrapper.clientHeight - paddingOffset;
+
+      const ratioWidth = containerWidth / unscaledViewport.width;
+      const ratioHeight = containerHeight / unscaledViewport.height;
+      const optimalScale = Math.min(ratioWidth, ratioHeight);
+
+      // Terapkan ukuran dan rotasi final
+      const viewport = page.getViewport({
+        scale: optimalScale,
+        rotation: totalRotation
+      });
+
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+
+      await page.render({
+        canvasContext: context,
+        viewport: viewport
+      }).promise;
+
+    } catch (error) {
+      console.error(`Gagal merender halaman ${pageNum}:`, error);
     }
   }
-  // $("#sample_data").DataTable();
+
+  // Fungsi Utama: Setup Awal Semua Halaman (Kanvas + Tombol)
+  async function setupAllPages() {
+    if (!currentPdfDoc) return;
+
+    const container = document.getElementById('pdf-preview-container');
+    container.innerHTML = '';
+
+    for (let pageNum = 1; pageNum <= currentPdfDoc.numPages; pageNum++) {
+      // Set default rotasi tambahan halaman ini adalah 0
+      pageRotations[pageNum] = 0;
+
+      // Buat Wrapper per halaman (untuk menampung tombol + kanvas)
+      const pageWrapper = document.createElement('div');
+      pageWrapper.className = 'page-wrapper mb-5 pb-3 border-bottom border-secondary';
+
+      // Buat UI Tombol Kontrol per Halaman
+      const controls = document.createElement('div');
+      controls.className = 'mb-2 text-white';
+      controls.innerHTML = `
+        <span class="badge badge-dark mr-2">Halaman ${pageNum}</span>
+        <button class="btn btn-sm btn-light btn-rotate-left" data-page="${pageNum}">↺ Putar Kiri</button>
+        <button class="btn btn-sm btn-light btn-rotate-right" data-page="${pageNum}">Putar Kanan ↻</button>
+      `;
+
+      // Buat Kanvas
+      const canvas = document.createElement('canvas');
+      canvas.id = `canvas-page-${pageNum}`;
+      canvas.className = 'shadow d-block mx-auto bg-white';
+
+      // Masukkan elemen ke DOM
+      pageWrapper.appendChild(controls);
+      pageWrapper.appendChild(canvas);
+      container.appendChild(pageWrapper);
+
+      // Render visual halaman tersebut
+      await renderSinglePage(pageNum);
+    }
+  }
+  /**
+   * End
+   */
+
+  function showDetail(id, user) {
+    // Early return: jika id "0", sembunyikan detail dan hentikan eksekusi
+    if (id === '0') {
+      handlePanelVisibility(id);
+      return;
+    }
+
+    const postData = {
+      id: id
+    };
+
+    $.ajax({
+      url: 'mod/download/GetData.php',
+      type: 'post',
+      data: postData,
+      dataType: 'json',
+      success: function(response) {
+        // Early return jika status bukan "00"
+        if (response.status !== '00') {
+          alert('No Data!');
+          return;
+        }
+
+        const docData = response.msg;
+        // Set data utama terlebih dahulu
+        $('#id_doc').val(id);
+        $('#filename_detail').text(docData.nama);
+        $('#url_detail').val(docData.url);
+        $('#description_detail').val(docData.description);
+        $('#no_transaksi_detail').text(docData.no_transaksi);
+        $('#uploader_detail').text(docData.userid);
+        $('#date_detail').text(getDate('Date', docData.date_uploaded.date));
+
+        // Expiry date
+        const expiryValue = (docData.expiry_date == null || docData.expiry_date === '') ?
+          '' :
+          getDate('Date', docData.expiry_date.date);
+        $('#expiry_date').val(expiryValue);
+
+        $('#rc_uploader_detail').text(docData.keterangan);
+
+        // Tags: proses array dengan map dan join, assign dahulu baru set
+        const tagsRaw = (docData.tags == null || docData.tags === '') ? [] : docData.tags.split('^');
+        const tagsHtml = tagsRaw.map(tag => `<option value="${tag}" selected>${tag}</option>`).join('');
+        $('#tags_detail').empty().append(tagsHtml);
+
+        // User privilege table
+        const detailEntries = docData.detail;
+        const tableBody = $('#userlogs_privilege tbody');
+        tableBody.empty();
+        if (detailEntries != null && Array.isArray(detailEntries)) {
+          const rowsHtml = detailEntries.map(item =>
+            `<tr><td>${item.first_name} - ${item.position_name_id}</td></tr>`
+          ).join('');
+          tableBody.append(rowsHtml);
+        }
+
+        // Panggil AJAX untuk kategori, hanya setelah detail selesai
+        $.ajax({
+          url: 'mod/download/GetDataAllCategory.php',
+          type: 'post',
+          data: postData,
+          dataType: 'json',
+          success: function(catResponse) {
+            if (catResponse.status !== '00') {
+              alert('No Category Data!');
+              return;
+            }
+
+            const selectedCategoryId = docData.jenis_doc;
+            const catOptionsHtml = catResponse.msg.map(cat => {
+              const selectedAttr = (cat.id == selectedCategoryId) ? 'selected' : '';
+              return `<option value="${cat.id}" ${selectedAttr}>${cat.nama} - ${cat.access}</option>`;
+            }).join('');
+            $('#category_detail').empty().append(catOptionsHtml);
+          }
+        });
+
+        // Hak akses user: update visibilitas dan disabled state dengan jQuery
+        const isOwner = (user === docData.userid);
+        $('#delS').css('visibility', isOwner ? 'visible' : 'hidden');
+        $('#saveS').css('visibility', isOwner ? 'visible' : 'hidden');
+        $('#category_detail').prop('disabled', !isOwner);
+        $('#description_detail').prop('disabled', !isOwner);
+        $('#tags_detail').prop('disabled', !isOwner);
+      }
+    });
+
+    // Penanganan tampilan mobile/desktop
+    handlePanelVisibility(id);
+  }
+
+  // Fungsi terpisah untuk menangani visibilitas panel,
+  // memanfaatkan early return agar logika bersih.
+  function handlePanelVisibility(id) {
+    const isMobile = $(window).width() < 1100;
+    const $details = $('#details');
+    const $allData = $('#all_data');
+
+    if (isMobile) {
+      // Toggle tampilan jika detail sedang disembunyikan
+      if ($details.css('display') === 'none') {
+        $allData.fadeOut();
+        $details.fadeIn();
+      } else {
+        $details.fadeOut();
+        $allData.fadeIn();
+      }
+      return;
+    }
+
+    // Desktop: tampilkan detail hanya jika id bukan "0"
+    if (id === '0') {
+      $details.fadeOut();
+    } else {
+      $details.fadeIn();
+    }
+  }
+
   function openModalUpload() {
     $('#uploadModal').modal('show');
   }
 
+  // function update() {
+  //   var tags = $('#tags_detail').val();
+  //   var tag = "";
+  //   if (tags.length > 0) {
+  //     for (var i = 0; i < tags.length; i++) {
+  //       tag += tags[i];
+  //       if (i != (tags.length - 1)) {
+  //         tag += "^";
+  //       }
+  //     }
+  //   }
+  //   var expired = '';
+  //   if ($('#expiry_date').val() == '') {
+  //     expired = '';
+  //   } else {
+  //     expired = $('#expiry_date').val();
+  //   }
+  //   var data = {
+  //     "description": $('#description_detail').val(),
+  //     "expiry_date": expired,
+  //     "jenis_doc": $('#category_detail').val(),
+  //     "tags": tag
+  //   }
+
+  //   $.ajax({
+  //     url: 'mod/download/UpdateData.php?id=' + $('#id_doc').val() + '&mod=doc_upload',
+  //     type: 'post',
+  //     data: data,
+  //     dataType: 'json',
+  //     success: function(response1) {
+  //       if (response1.status == "00") {
+  //         alert("Document Updated!")
+  //       } else {
+  //         alert("Document Update Fail!")
+  //       }
+  //       location.reload();
+  //     }
+  //   });
+  // }
+
   function update() {
-    var tags = $('#tags_detail').val();
-    var tag = "";
-    if (tags.length > 0) {
-      for (var i = 0; i < tags.length; i++) {
-        tag += tags[i];
-        if (i != (tags.length - 1)) {
-          tag += "^";
-        }
-      }
-    }
-    var expired = '';
-    if ($('#expiry_date').val() == '') {
-      expired = '';
-    } else {
-      expired = $('#expiry_date').val();
-    }
-    var data = {
-      "description": $('#description_detail').val(),
-      "expiry_date": expired,
-      "jenis_doc": $('#category_detail').val(),
-      "tags": tag
-    }
+    const docId = $('#id_doc').val();
+    const description = $('#description_detail').val();
+    const category = $('#category_detail').val();
+    // expiry_date: gunakan nilai input atau string kosong
+    const expiryDate = $('#expiry_date').val() || '';
+
+    // Ambil nilai tags_detail. Jika select multiple, val() mengembalikan array;
+    // jika single, mengembalikan string. Tangani kedua kemungkinan.
+    const tagsVal = $('#tags_detail').val();
+    // Gunakan Array.isArray untuk deteksi, fallback ke string kosong jika null/undefined
+    const tagString = Array.isArray(tagsVal) ? tagsVal.join('^') : (tagsVal || '');
+
+    const postData = {
+      description: description,
+      expiry_date: expiryDate,
+      jenis_doc: category,
+      tags: tagString
+    };
 
     $.ajax({
-      url: 'mod/download/UpdateData.php?id=' + $('#id_doc').val() + '&mod=doc_upload',
+      url: `mod/download/UpdateData.php?id=${docId}&mod=doc_upload`,
       type: 'post',
-      data: data,
+      data: postData,
       dataType: 'json',
-      success: function(response1) {
-        if (response1.status == "00") {
-          alert("Document Updated!")
+      success: function(response) {
+        if (response.status === '00') {
+          alert('Document Updated!');
         } else {
-          alert("Document Update Fail!")
+          alert('Document Update Fail!');
         }
         location.reload();
       }
@@ -511,135 +992,100 @@
   }
 
   function showSearch() {
-    // console.log("aaa");
-    // $("#searchDt").show();
-    var stat = document.getElementById("searchDt");
-    // console.log(stat);
+    const $searchDt = $('#searchDt');
+    if ($searchDt.length === 0) return;
 
-    if (stat.style.visibility == "hidden") {
-      stat.style.visibility = "visible";
-    } else {
-      stat.style.visibility = "hidden";
+    if ($searchDt.css('visibility') === 'hidden') {
+      $searchDt.css('visibility', 'visible');
+      return;
     }
-    // $("#searchDatatable").addClass("fade-in");
+    $searchDt.css('visibility', 'hidden');
   }
 
-  $(document).ready(function() {
-
-    $("#but_upload").click(function() {
-      var fd = new FormData();
-      var files = $('#fileToUpload')[0].files;
-      var jd = $('#jenis_doc').val();
-      var description = $('#rename').val();
-      var tags = $('#tags').val();
-      var tag = "";
-      if (tags.length > 0) {
-        for (var i = 0; i < tags.length; i++) {
-          tag += tags[i];
-          if (i != (tags.length - 1)) {
-            tag += "^";
-          }
-        }
-      }
-      // console.log(tag);
-      if (jd == '' || jd == null) {
-        alert("Document Type Can not be Empty!");
-      } else if (description == '' || description == null) {
-        alert("Description Can not be Empty!");
-      } else {
-        if (files.length > 0) {
-          fd.append('file', files[0]);
-          fd.append('jenis_doc', jd);
-          fd.append('description', description);
-          fd.append('tags', tag);
-          fd.append('expiry_date', $('#expired_date').val());
-          $.ajax({
-            url: 'mod/download/upload.php',
-            type: 'post',
-            data: fd,
-            dataType: 'json',
-            contentType: false,
-            processData: false,
-            success: function(response) {
-              if (response.status == 1) {
-                alert("Upload " + response.name + " Success!");
-                $('#uploadModal').modal('hide');
-              } else {
-                alert('File upload Fail!');
-                $('#uploadModal').modal('hide');
-              }
-              location.reload();
-            }
-          });
-        } else {
-          alert("Please select a file.");
-        }
-        $('#fileToUpload').val('');
-      }
-    });
-  });
+  // function confDel() {
+  //   let text;
+  //   if (confirm("Are you sure to delete file " + $('#filename_detail').html() + " ?") == true) {
+  //     var data = {
+  //       "id": $('#id_doc').val(),
+  //       "url": $('#url_detail').val()
+  //     };
+  //     $.ajax({
+  //       url: 'mod/download/deleteFile.php', // url where to submit the request
+  //       type: "POST", // type of action POST || GET
+  //       data: data, // post data || get data
+  //       dataType: 'json', // data type
+  //       success: function(result) {
+  //         alert("Document Deleted Successfully!");
+  //         location.reload();
+  //       },
+  //       error: function(xhr, resp, text) {
+  //         console.log(xhr, resp, text);
+  //       }
+  //     });
+  //   } else {
+  //     text = "You canceled!";
+  //   }
+  // }
 
   function confDel() {
-    let text;
-    if (confirm("Are you sure to delete file " + $('#filename_detail').html() + " ?") == true) {
-      var data = {
-        "id": $('#id_doc').val(),
-        "url": $('#url_detail').val()
-      };
-      $.ajax({
-        url: 'mod/download/deleteFile.php', // url where to submit the request
-        type: "POST", // type of action POST || GET
-        data: data, // post data || get data
-        dataType: 'json', // data type
-        success: function(result) {
-          alert("Document Deleted Successfully!");
-          location.reload();
-        },
-        error: function(xhr, resp, text) {
-          console.log(xhr, resp, text);
-        }
-      });
-    } else {
-      text = "You canceled!";
-    }
+    const filename = $('#filename_detail').text();
+    const id = $('#id_doc').val();
+    const fileUrl = $('#url_detail').val();
+
+    // Early return: batalkan proses jika user tidak konfirmasi
+    if (!confirm(`Are you sure to delete file ${filename} ?`)) return;
+
+    const postData = {
+      id: id,
+      url: fileUrl
+    };
+
+    $.ajax({
+      url: 'mod/download/deleteFile.php',
+      type: 'POST',
+      data: postData,
+      dataType: 'json',
+      success: function(result) {
+        alert('Document Deleted Successfully!');
+        location.reload();
+      },
+      error: function(xhr, resp, text) {
+        console.log(xhr, resp, text);
+      }
+    });
   }
-  // $("#all_category").select2({ dropdownCssClass: "dropdownFont" });
-  var table = $('#sample_data').DataTable({
+
+  let table = $('#sample_data').DataTable({
     "dom": 'rtip',
     "paging": false,
     "info": false,
     initComplete: function() {
       this.api().columns([0]).every(function() {
-        var column = this;
-        var div = $('<span class="" style="line-height: 150% !important; margin-top: 50px !important;"> </span>')
-          // var div = $('<div style="line-height=0.5;">&nbsp;</div>')
+        let column = this;
+        let div = $('<span class="" style="line-height: 150% !important; margin-top: 50px !important;"> </span>')
           .appendTo($(column.header()));
-        var select = $('<select class="form-control form-control-sm select2" style="margin-top: 50px !important;" id="all_category"><option selected value="">-- All --</option></select>')
+        let select = $('<select class="form-control form-control-sm select2" style="margin-top: 50px !important;" id="all_category"><option selected value="">-- All --</option></select>')
           .appendTo($(column.header()))
           .on('change', function() {
-            var val = $.fn.dataTable.util.escapeRegex(
+            let val = $.fn.dataTable.util.escapeRegex(
               $(this).val()
             );
 
             column
-              // .search( val ? '^'+val+'$' : '', true, false )
               .search(this.value, true, false)
               .draw();
           });
 
         column.data().unique().sort().each(function(d, j) {
-          // console.log(d+"  "+j);
           select.append('<option value=' + d + '>' + d + '</option>');
         });
       });
-      // $("#all_category").select2({ dropdownCssClass: "dropdownFont" });
       this.api().columns([1]).every(function() {
-        var column = this;
-        // var title = column.text();
-        var text = $('<input type="text" class="mt-2 form-control form-control-sm" placeholder="Search Description" />')
+        let column = this;
+        let text = $('<input type="text" class="mt-2 form-control form-control-sm" placeholder="Search Description" />')
           .appendTo($(column.header()))
           .on('keyup change', function() {
-            var val = $.fn.dataTable.util.escapeRegex(
+            let val = $.fn.dataTable.util.escapeRegex(
               $(this).val()
             );
 
@@ -647,15 +1093,13 @@
               .search(this.value, true, false)
               .draw();
           });
-
       });
       this.api().columns([2]).every(function() {
-        var column = this;
-        // var title = column.text();
-        var text = $('<input type="text" class="mt-2 form-control form-control-sm" placeholder="Search RC" />')
+        let column = this;
+        let text = $('<input type="text" class="mt-2 form-control form-control-sm" placeholder="Search RC" />')
           .appendTo($(column.header()))
           .on('keyup change', function() {
-            var val = $.fn.dataTable.util.escapeRegex(
+            let val = $.fn.dataTable.util.escapeRegex(
               $(this).val()
             );
 
@@ -663,39 +1107,11 @@
               .search(this.value, true, false)
               .draw();
           });
-
       });
-      // this.api().columns([1]).every( function () {
-      //     // var title = this.text();
-      //       this.append('<input type="text" class="col mt-2" placeholder="Search Description" />');
-      //
-      // });
     }
   });
+
   $('#searchDatatable').keyup(function() {
     table.search($(this).val()).draw();
   });
-  // $('#sample_data thead th').columns([0])(function () {
-  //     // var title = $(this).text();
-  //     $(this).append('<select><option selected disabled>-- Category --</option></select>');
-  // });
-  // $('#sample_data thead th').each(function () {
-  //     var title = $(this).text();
-  //     $(this).append('<input type="text" class="col mt-2" placeholder="Search ' + title + '" />');
-  // });
-  // table.columns().eq(0).each( function ( colIdx ) {
-  //     if(colIdx == 0){
-  //     }else{
-  //       $( 'input', table.column( colIdx ).header() ).on( 'keyup change', function () {
-  //         table
-  //         .column( colIdx )
-  //         .search( this.value, true, false )
-  //         .draw();
-  //       } );
-  //       $('input', table.column(colIdx).header()).on('click', function(e) {
-  //         e.stopPropagation();
-  //       });
-  //
-  //     }
-  // } );
 </script>
